@@ -10,7 +10,7 @@ st.set_page_config(page_title="LEGAL ASSISTANT", layout="wide")
 PINECONE_API_KEY = st.secrets["PINECONE_API_KEY"]
 TOGETHER_AI_API_KEY = st.secrets["TOGETHER_AI_API_KEY"]
 
-# Pinecone setup
+# Initialize Pinecone
 INDEX_NAME = "lawdata-index"
 pc = pinecone.Pinecone(api_key=PINECONE_API_KEY)
 
@@ -27,6 +27,7 @@ index = pc.Index(INDEX_NAME)
 embedding_model = SentenceTransformer("BAAI/bge-large-en")
 reranker = CrossEncoder("cross-encoder/ms-marco-MiniLM-L-6-v2")
 
+# Page Title
 st.title("⚖️ LEGAL ASSISTANT")
 
 st.markdown("This AI-powered legal assistant retrieves relevant legal documents and generates professional legal reports.")
@@ -44,7 +45,7 @@ if st.button("Generate Report"):
 
     # Query Pinecone for similar embeddings
     try:
-        search_results = index.query(vector=query_embedding, top_k=10, include_metadata=True)
+        search_results = index.query(vector=query_embedding, top_k=15, include_metadata=True)
     except Exception as e:
         st.error(f"❌ Pinecone query failed: {e}")
         st.stop()
@@ -54,7 +55,7 @@ if st.button("Generate Report"):
         st.warning("⚠️ No relevant case found. Please refine your query.")
         st.stop()
 
-    # Extract retrieved case text & ensure they are from Pinecone
+    # Extract and rerank retrieved case text
     retrieved_cases = []
     case_citations = []
 
@@ -63,20 +64,25 @@ if st.button("Generate Report"):
             case_text = match["metadata"]["text"]
             case_source = match["metadata"].get("source", "Unknown Case")
 
-            retrieved_cases.append(f"{case_text}")  # ✅ No unnecessary formatting
-
+            retrieved_cases.append(case_text)
             if case_source != "Unknown Case":
-                case_citations.append(f"{case_source}")  # ✅ Case citations without brackets
+                case_citations.append(case_source)
 
     # Prevent hallucination: Stop if no valid retrieved cases
     if not retrieved_cases:
         st.warning("⚠️ No relevant case found. Please refine your query.")
         st.stop()
 
-    # Combine retrieved cases (limit to 5 for better context)
-    context_text = "\n\n".join(retrieved_cases[:5])
+    # **Rerank results** before passing to LLM
+    ranked_results = sorted(
+        zip(retrieved_cases, reranker.predict([(query, case) for case in retrieved_cases])),
+        key=lambda x: x[1], reverse=True
+    )
 
-    # 🔥 STRICT LLM Prompt to prevent hallucination
+    # Select top 5 cases
+    context_text = "\n\n".join([r[0] for r in ranked_results[:5]])
+
+    # 🔥 **STRICT LLM Prompt to Prevent Hallucination**
     prompt = f"""
     Generate a **formal legal report** based only on the provided legal materials. 
     Ensure the report follows a **professional tone** and is formatted for legal use.
@@ -90,9 +96,10 @@ if st.button("Generate Report"):
     - **Citations**: Legal sources used.  
 
     **Important Rules:**  
+    - **STRICTLY use only the retrieved documents.**  
     - **Do NOT fabricate case law, statutes, or legal principles.**  
     - **Ensure citations are included naturally in the report.**  
-    - **Do NOT mention retrieval or missing data.**  
+    - **Do NOT mention retrieval sources or missing data.**  
 
     📜 **Retrieved Legal Context:**  
     {context_text}
@@ -111,14 +118,14 @@ if st.button("Generate Report"):
                     {"role": "system", "content": "You are an expert in legal matters."},
                     {"role": "user", "content": prompt}
                 ],
-                "temperature": 0.2
+                "temperature": 0.0  # ✅ Reduce randomness & hallucination
             }
         )
 
         response_data = response.json()
         answer = response_data.get("choices", [{}])[0].get("message", {}).get("content", "").strip()
 
-        if not answer or "No relevant case found" in answer:
+        if not answer:
             st.warning("⚠️ No relevant legal case found. Please refine your query.")
             st.stop()
 
@@ -137,3 +144,4 @@ if st.button("Generate Report"):
 
 # Footer
 st.markdown("<p style='text-align: center;'>🚀 Built with Streamlit, Pinecone, and Llama-3.3-70B-Turbo on Together AI</p>", unsafe_allow_html=True)
+
