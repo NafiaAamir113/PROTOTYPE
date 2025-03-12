@@ -40,6 +40,11 @@ if st.button("Generate Report"):
         st.warning("⚠️ Please enter a legal question before generating a report.")
         st.stop()
 
+    # Extract case number (if present) for exact match filtering
+    case_number = None
+    if "W.P. No." in query:
+        case_number = query.split("W.P. No.")[1].split()[0].strip()
+
     # Convert user query into embeddings
     query_embedding = embedding_model.encode(query, normalize_embeddings=True).tolist()
 
@@ -63,14 +68,19 @@ if st.button("Generate Report"):
         if "text" in match["metadata"]:
             case_text = match["metadata"]["text"]
             case_source = match["metadata"].get("source", "Unknown Case")
+            retrieved_case_number = match["metadata"].get("case_number", "")
+
+            # **✅ Exact Case Number Matching** (Prevents incorrect case retrieval)
+            if case_number and case_number not in retrieved_case_number:
+                continue  # Skip irrelevant cases
 
             retrieved_cases.append(case_text)
             if case_source != "Unknown Case":
                 case_citations.append(case_source)
 
-    # Prevent hallucination: Stop if no valid retrieved cases
+    # **Prevent hallucination: Stop if no valid retrieved cases**
     if not retrieved_cases:
-        st.warning("⚠️ No relevant case found. Please refine your query.")
+        st.warning(f"⚠️ No exact match found for W.P. No. {case_number}. Please refine your query.")
         st.stop()
 
     # **Rerank results** before passing to LLM
@@ -144,4 +154,3 @@ if st.button("Generate Report"):
 
 # Footer
 st.markdown("<p style='text-align: center;'>🚀 Built with Streamlit, Pinecone, and Llama-3.3-70B-Turbo on Together AI</p>", unsafe_allow_html=True)
-
