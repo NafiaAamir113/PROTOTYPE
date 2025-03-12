@@ -40,15 +40,15 @@ if st.button("Generate Report"):
         st.warning("⚠️ Please enter a legal question before generating a report.")
         st.stop()
 
-    # Extract case number (if present) for exact match filtering
+    # **Extract Case Number for Exact Matching (Prevents Cross-Case Retrieval)**
     case_number = None
-    if "W.P. No." in query:
-        case_number = query.split("W.P. No.")[1].split()[0].strip()
+    if any(x in query for x in ["W.P. No.", "Crl.", "Civ.", "S.C.", "P.L.D."]):  # ✅ Covers various case types
+        case_number = query.split()[-1].strip()  # Extracts last number in query
 
     # Convert user query into embeddings
     query_embedding = embedding_model.encode(query, normalize_embeddings=True).tolist()
 
-    # Query Pinecone for similar embeddings
+    # Query Pinecone for similar embeddings with a **minimum similarity threshold**
     try:
         search_results = index.query(vector=query_embedding, top_k=15, include_metadata=True)
     except Exception as e:
@@ -65,12 +65,17 @@ if st.button("Generate Report"):
     case_citations = []
 
     for match in search_results["matches"]:
+        similarity_score = match.get("score", 0)  # Extract similarity score
+
+        if similarity_score < 0.75:  # ✅ Only use high-confidence results
+            continue
+
         if "text" in match["metadata"]:
             case_text = match["metadata"]["text"]
             case_source = match["metadata"].get("source", "Unknown Case")
             retrieved_case_number = match["metadata"].get("case_number", "")
 
-            # **✅ Exact Case Number Matching** (Prevents incorrect case retrieval)
+            # ✅ **Enforce Exact Case Matching** (Prevents cross-document hallucination)
             if case_number and case_number not in retrieved_case_number:
                 continue  # Skip irrelevant cases
 
@@ -78,9 +83,9 @@ if st.button("Generate Report"):
             if case_source != "Unknown Case":
                 case_citations.append(case_source)
 
-    # **Prevent hallucination: Stop if no valid retrieved cases**
+    # **Prevent Hallucination: Stop if No Valid Retrieved Cases**
     if not retrieved_cases:
-        st.warning(f"⚠️ No exact match found for W.P. No. {case_number}. Please refine your query.")
+        st.warning(f"⚠️ No exact match found for case '{case_number}'. Please refine your query.")
         st.stop()
 
     # **Rerank results** before passing to LLM
@@ -92,29 +97,15 @@ if st.button("Generate Report"):
     # Select top 5 cases
     context_text = "\n\n".join([r[0] for r in ranked_results[:5]])
 
-    # 🔥 **STRICT LLM Prompt to Prevent Hallucination**
+    # **STRICT LLM Prompt to Prevent Hallucination**
     prompt = f"""
-    Generate a **formal legal report** based only on the provided legal materials. 
-    Ensure the report follows a **professional tone** and is formatted for legal use.
+    You are a legal expert generating a report based strictly on the provided case law.  
+    If there is insufficient retrieved data, respond with: "No relevant legal information found."
 
-    **Report Structure:**  
-    - **Introduction**: Overview of the case.  
-    - **Facts of the Case**: Key facts and procedural history.  
-    - **Legal Issues**: Relevant legal provisions and arguments.  
-    - **Court’s Reasoning**: Judicial interpretation and key findings.  
-    - **Final Ruling**: The court’s decision.  
-    - **Citations**: Legal sources used.  
-
-    **Important Rules:**  
-    - **STRICTLY use only the retrieved documents.**  
-    - **Do NOT fabricate case law, statutes, or legal principles.**  
-    - **Ensure citations are included naturally in the report.**  
-    - **Do NOT mention retrieval sources or missing data.**  
-
-    📜 **Retrieved Legal Context:**  
+    **Legal Context (STRICTLY use this information ONLY):**  
     {context_text}
 
-    **Legal Report:**  
+    **Generate a professional legal report based strictly on the above context.**
     """
 
     # Query Together AI with strict constraints
@@ -128,14 +119,14 @@ if st.button("Generate Report"):
                     {"role": "system", "content": "You are an expert in legal matters."},
                     {"role": "user", "content": prompt}
                 ],
-                "temperature": 0.0  # ✅ Reduce randomness & hallucination
+                "temperature": 0.0  # ✅ **Reduce randomness & hallucination**
             }
         )
 
         response_data = response.json()
         answer = response_data.get("choices", [{}])[0].get("message", {}).get("content", "").strip()
 
-        if not answer:
+        if not answer or "No relevant legal information found" in answer:
             st.warning("⚠️ No relevant legal case found. Please refine your query.")
             st.stop()
 
